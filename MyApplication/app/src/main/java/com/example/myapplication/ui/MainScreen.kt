@@ -81,7 +81,10 @@ fun MainScreen(
     if (active != null) {
         BackHandler { activeMeasurement = null }
         when (active) {
-            MeasurementType.CRITICAL_FORCE -> CriticalForceScreen(onBack = { activeMeasurement = null })
+            MeasurementType.CRITICAL_FORCE -> CriticalForceScreen(
+                measurement = measurement,
+                onBack = { activeMeasurement = null },
+            )
         }
         return
     }
