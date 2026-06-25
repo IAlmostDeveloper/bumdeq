@@ -1,0 +1,30 @@
+# === Gradle ===
+.gradle/
+build/
+**/build/
+
+# === Local config ===
+local.properties
+*.iml
+
+# === Android Studio ===
+.idea/
+*.iws
+*.ipr
+
+# === Keystore (очень важно) ===
+*.jks
+*.keystore
+
+# === Android generated files ===
+captures/
+.externalNativeBuild/
+.cxx/
+output.json
+
+# === Log files ===
+*.log
+
+# === OS files ===
+.DS_Store
+Thumbs.db
