@@ -1,7 +1,6 @@
 package com.example.myapplication
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -11,9 +10,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.annotation.RequiresPermission
 import androidx.compose.runtime.getValue
-import androidx.core.app.ActivityCompat
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.myapplication.ui.MainScreen
@@ -22,40 +19,29 @@ import com.example.myapplication.ui.bluetooth.BleViewModel
 import com.example.myapplication.ui.theme.MyApplicationTheme
 
 /**
- * Тонкая Activity: запрашивает BLE-разрешения и рисует [com.example.myapplication.ui.bluetooth.BluetoothScreen],
- * привязанный к [BleViewModel]. Вся работа с BLE — в BleViewModel/BleManager.
+ * Тонкая Activity: запрашивает BLE-разрешения и рисует [MainScreen], привязанный к
+ * [BleViewModel]. Проверка разрешений на стороне Android-API — в BleManager;
+ * Activity лишь решает, когда (пере)запросить их у пользователя.
  */
 class MainActivity : ComponentActivity() {
 
     private lateinit var viewModel: BleViewModel
 
-    @SuppressLint("MissingPermission")
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-            val scan = result[Manifest.permission.BLUETOOTH_SCAN] == true
-            val connect = result[Manifest.permission.BLUETOOTH_CONNECT] == true
-            if (ActivityCompat.checkSelfPermission(
-                    this,
-                    Manifest.permission.BLUETOOTH_CONNECT
-                ) == PackageManager.PERMISSION_GRANTED
-            ) {
-                // Эта штука ругается в линте на отсутствие проверки разрешений
-                // Добавил пока suppress ошибки, странно, что с ней тоже билдится без проблем
-                onPermissionsResult(scanGranted = scan, connectGranted = connect)
-            }
+            // Разбираем результат БЕЗ внешнего гейта по CONNECT: сканирование требует только
+            // SCAN, поэтому при выдаче лишь SCAN поиск всё равно должен стартовать.
+            onPermissionsResult(
+                scanGranted = result[Manifest.permission.BLUETOOTH_SCAN] == true,
+                connectGranted = result[Manifest.permission.BLUETOOTH_CONNECT] == true,
+            )
         }
 
-    @SuppressLint("MissingPermission")
+    // Только показывает системный диалог. На реальное включение реагирует BleManager по
+    // переходу адаптера в STATE_ON (в момент возврата сюда адаптер обычно ещё TURNING_ON).
     private val enableBtLauncher =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-            if (ActivityCompat.checkSelfPermission(
-                    this,
-                    Manifest.permission.BLUETOOTH_CONNECT
-                ) == PackageManager.PERMISSION_GRANTED && viewModel.isBluetoothEnabled
-            ) {
-                viewModel.loadBondedDevices()
-                startScanChecked()
-            }
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            Log.d("BLE", "Enable-BT dialog result=${result.resultCode}")
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -76,11 +62,17 @@ class MainActivity : ComponentActivity() {
                 MainScreen(
                     bleState = state,
                     measurement = measurement,
-                    onScan = { startScanChecked() },
-                    onStopScan = { stopScanChecked() },
-                    onConnect = { device -> connectChecked(device) },
+                    onScan = { withPermission(Manifest.permission.BLUETOOTH_SCAN) { viewModel.startScan() } },
+                    onStopScan = { withPermission(Manifest.permission.BLUETOOTH_SCAN) { viewModel.stopScan() } },
+                    onConnect = { device ->
+                        withPermission(Manifest.permission.BLUETOOTH_CONNECT) { viewModel.connect(device) }
+                    },
                     onSaveSelected = { device -> viewModel.saveSelected(device) },
-                    onEnableBluetooth = { enableBluetoothChecked() },
+                    onEnableBluetooth = {
+                        withPermission(Manifest.permission.BLUETOOTH_CONNECT) {
+                            enableBtLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                        }
+                    },
                 )
             }
         }
@@ -97,45 +89,25 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     private fun onPermissionsResult(scanGranted: Boolean, connectGranted: Boolean) {
-        if (!connectGranted) {
-            Log.w("BLE", "BLUETOOTH_CONNECT denied")
-        }
+        if (!connectGranted) Log.w("BLE", "BLUETOOTH_CONNECT denied")
         if (!viewModel.isBluetoothEnabled) {
             Log.d("BLE", "Bluetooth disabled")
             return
         }
+        // Сопряжённые устройства требуют CONNECT; сканирование — только SCAN. Гейтим раздельно.
         if (connectGranted) viewModel.loadBondedDevices()
-        if (scanGranted) startScanChecked() else Log.w("BLE", "BLUETOOTH_SCAN denied")
+        if (scanGranted) viewModel.startScan() else Log.w("BLE", "BLUETOOTH_SCAN denied")
     }
 
-    private fun startScanChecked() {
-        if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED) {
-            viewModel.startScan()
-        } else {
-            requestBtPermissions()
-        }
-    }
-
-    private fun stopScanChecked() {
-        if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED) {
-            viewModel.stopScan()
-        }
-    }
-
-    private fun connectChecked(device: BleDeviceUi) {
-        if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
-            viewModel.connect(device)
-        } else {
-            requestBtPermissions()
-        }
-    }
-
-    /** Показать системный диалог включения Bluetooth (требует BLUETOOTH_CONNECT на API 31+). */
-    private fun enableBluetoothChecked() {
-        if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
-            enableBtLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+    /**
+     * Единая обёртка вместо четырёх копий: выполнить [action] при наличии [permission],
+     * иначе перезапросить разрешения. Проверка разрешений на уровне Android-API живёт
+     * в BleManager; здесь — только UX-решение «запросить, если не выдано».
+     */
+    private inline fun withPermission(permission: String, action: () -> Unit) {
+        if (checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED) {
+            action()
         } else {
             requestBtPermissions()
         }

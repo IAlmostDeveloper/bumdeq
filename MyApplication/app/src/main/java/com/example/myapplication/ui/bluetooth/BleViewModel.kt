@@ -1,34 +1,36 @@
 package com.example.myapplication.ui.bluetooth
 
-import android.Manifest
 import android.content.Context
-import androidx.annotation.RequiresPermission
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.myapplication.data.SettingsRepository
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 
 /**
  * Связывает [BleManager] с UI: собирает все его потоки в один [BleScreenState] и
- * проксирует действия экрана. Хранит «сохранённый» MAC (последний выбранный).
+ * проксирует действия экрана.
  *
- * Сейчас сохранение держится в памяти ViewModel; точка интеграции с DataStore
- * помечена в [saveSelected].
+ * Проверка разрешений — целиком на [BleManager] (он встроенно гейтит каждый системный
+ * вызов), поэтому методы здесь не объявляют @RequiresPermission. «Сохранённый» MAC
+ * персистится через [SettingsRepository] (DataStore) и переживает перезапуск процесса.
  */
-class BleViewModel(private val manager: BleManager) : ViewModel() {
+class BleViewModel(
+    private val manager: BleManager,
+    private val settings: SettingsRepository,
+) : ViewModel() {
 
-    private val savedAddress = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
-
-    /** Единый источник правды для [BluetoothScreen]. */
+    /** Единый источник правды для экрана устройств. */
     val state: StateFlow<BleScreenState> = combine(
         manager.bondedDevices,
         manager.scanResults,
         manager.connectionStates,
         manager.isScanning,
-        savedAddress,
+        settings.savedAddress,
     ) { bonded, scanned, states, scanning, saved ->
         BleScreenState(
             // Подмешиваем актуальный статус подключения в обе секции.
@@ -54,39 +56,36 @@ class BleViewModel(private val manager: BleManager) : ViewModel() {
     val isBluetoothEnabled: Boolean get() = manager.isBluetoothEnabled
 
     /** Загрузить сопряжённые устройства (после выдачи разрешений). */
-    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     fun loadBondedDevices() = manager.refreshBondedDevices()
 
-    @RequiresPermission(Manifest.permission.BLUETOOTH_SCAN)
     fun startScan() = manager.startScan()
 
-    @RequiresPermission(Manifest.permission.BLUETOOTH_SCAN)
     fun stopScan() = manager.stopScan()
 
-    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     fun connect(device: BleDeviceUi) = manager.connect(device.address)
 
-    /** Запомнить выбранное устройство. TODO: вынести в DataStore для переживания перезапуска. */
+    /** Запомнить выбранное устройство в DataStore (переживает перезапуск). */
     fun saveSelected(device: BleDeviceUi) {
-        savedAddress.value = device.address
+        viewModelScope.launch { settings.setSavedAddress(device.address) }
     }
 
     override fun onCleared() {
         super.onCleared()
-        // disconnect() сам проверяет наличие BLUETOOTH_CONNECT и тихо выходит, если его нет.
-        @Suppress("MissingPermission")
         manager.disconnect()
         manager.release() // снять broadcast-подписку на состояние адаптера
     }
 
     companion object {
-        /** Фабрика: BleManager нужен applicationContext, а не Activity. */
+        /** Фабрика: BleManager и SettingsRepository нужен applicationContext, а не Activity. */
         fun factory(context: Context): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                    val manager = BleManager(context.applicationContext)
-                    return BleViewModel(manager) as T
+                    val appContext = context.applicationContext
+                    return BleViewModel(
+                        manager = BleManager(appContext),
+                        settings = SettingsRepository(appContext),
+                    ) as T
                 }
             }
     }

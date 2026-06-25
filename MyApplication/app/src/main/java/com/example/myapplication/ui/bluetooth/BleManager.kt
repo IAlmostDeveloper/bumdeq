@@ -21,7 +21,6 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import androidx.annotation.RequiresPermission
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -72,11 +71,20 @@ class BleManager(private val appContext: Context) {
     private val scanTimeoutRunnable = Runnable { stopScanInternal() }
     private val connectTimeoutRunnable = Runnable { handleConnectTimeout() }
 
-    // Следим за включением/выключением Bluetooth, чтобы UI узнавал об этом сразу.
+    // Следим за состоянием адаптера. На переходе в STATE_ON адаптер УЖЕ реально включён
+    // (в отличие от момента возврата из ACTION_REQUEST_ENABLE, где он ещё TURNING_ON) —
+    // поэтому именно здесь подтягиваем сопряжённые устройства и запускаем скан.
     private val btStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
-                _bluetoothEnabled.value = adapter?.isEnabled == true
+            if (intent?.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
+            when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
+                BluetoothAdapter.STATE_ON -> {
+                    _bluetoothEnabled.value = true
+                    refreshBondedDevices() // внутри сам проверяет разрешение и тихо выходит
+                    startScan()
+                }
+
+                BluetoothAdapter.STATE_OFF -> _bluetoothEnabled.value = false
             }
         }
     }
@@ -92,16 +100,16 @@ class BleManager(private val appContext: Context) {
 
     val isBluetoothEnabled: Boolean get() = adapter?.isEnabled == true
 
-    private fun hasPermission(permission: String): Boolean =
-        ContextCompat.checkSelfPermission(appContext, permission) == PackageManager.PERMISSION_GRANTED
+    // ── Единственный владелец разрешений ────────────────────────────────────
+    // Проверки checkSelfPermission встроены ЛИТЕРАЛЬНО прямо перед каждым системным
+    // вызовом: только такую форму Android lint распознаёт как guard. Поэтому методы
+    // НЕ помечены @RequiresPermission, а ViewModel/Activity не обязаны повторять контракт.
 
-    private val hasScanPermission get() = hasPermission(Manifest.permission.BLUETOOTH_SCAN)
-    private val hasConnectPermission get() = hasPermission(Manifest.permission.BLUETOOTH_CONNECT)
-
-    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     fun refreshBondedDevices() {
-        if (!hasConnectPermission) return
         val adapter = adapter ?: return
+        if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.BLUETOOTH_CONNECT)
+            != PackageManager.PERMISSION_GRANTED
+        ) return
         _bondedDevices.value = adapter.bondedDevices.orEmpty().map { device ->
             BleDeviceUi(
                 name = device.name,
@@ -111,10 +119,12 @@ class BleManager(private val appContext: Context) {
         }
     }
 
-    @RequiresPermission(Manifest.permission.BLUETOOTH_SCAN)
     fun startScan() {
         val scanner = adapter?.bluetoothLeScanner ?: return
-        if (!hasScanPermission || _isScanning.value) return
+        if (_isScanning.value) return
+        if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.BLUETOOTH_SCAN)
+            != PackageManager.PERMISSION_GRANTED
+        ) return
 
         _scanResults.value = emptyMap()
         val settings = ScanSettings.Builder()
@@ -128,14 +138,9 @@ class BleManager(private val appContext: Context) {
         Log.d(TAG, "Scan started")
     }
 
-    @RequiresPermission(Manifest.permission.BLUETOOTH_SCAN)
     fun stopScan() = stopScanInternal()
 
-    /**
-     * Остановка скана со встроенной проверкой разрешения. Вызывается из публичного
-     * stopScan(), из таймаута и из disconnect() — проверка checkSelfPermission стоит
-     * прямо здесь, чтобы lint видел guard для @RequiresPermission-вызова stopScan().
-     */
+    /** Остановка скана. Вызывается из публичного stopScan(), таймаута и disconnect(). */
     private fun stopScanInternal() {
         mainHandler.removeCallbacks(scanTimeoutRunnable)
         if (!_isScanning.value) return
@@ -175,10 +180,11 @@ class BleManager(private val appContext: Context) {
     // ── Подключение ────────────────────────────────────────────────────────────
 
     /** Подключиться к устройству по MAC. Закрывает предыдущее соединение, если было. */
-    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     fun connect(address: String) {
-        if (!hasConnectPermission) return
         val adapter = adapter ?: return
+        if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.BLUETOOTH_CONNECT)
+            != PackageManager.PERMISSION_GRANTED
+        ) return
         val device = try {
             adapter.getRemoteDevice(address)
         } catch (e: IllegalArgumentException) {
@@ -225,10 +231,13 @@ class BleManager(private val appContext: Context) {
             ?: _bondedDevices.value.firstOrNull { it.address == address }?.name
 
     /** Разорвать текущее соединение, остановить скан и освободить ресурсы. */
-    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     fun disconnect() {
         stopScanInternal()
-        if (hasConnectPermission) gatt?.disconnect()
+        if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.BLUETOOTH_CONNECT)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            gatt?.disconnect()
+        }
         closeGatt()
     }
 
@@ -251,7 +260,6 @@ class BleManager(private val appContext: Context) {
 
     private val gattCallback = object : BluetoothGattCallback() {
 
-        @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             val address = gatt.device.address
             Log.d(TAG, "onConnectionStateChange addr=$address status=$status newState=$newState")
@@ -268,7 +276,11 @@ class BleManager(private val appContext: Context) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     mainHandler.removeCallbacks(connectTimeoutRunnable) // успели — таймаут не нужен
                     setState(address, ConnectionState.CONNECTED)
-                    if (hasConnectPermission) gatt.discoverServices()
+                    if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.BLUETOOTH_CONNECT)
+                        == PackageManager.PERMISSION_GRANTED
+                    ) {
+                        gatt.discoverServices()
+                    }
                 }
 
                 BluetoothProfile.STATE_DISCONNECTED -> {
@@ -343,7 +355,7 @@ class BleManager(private val appContext: Context) {
             deviceName = connectingName,
             timestampMs = System.currentTimeMillis(),
         )
-        Log.d(TAG, "Received from $address: ${measurement.asText} (${measurement.asHex})")
+        Log.d(TAG, "Received from $address: text='${measurement.asText}' value=${measurement.numericValue} hex=[${measurement.asHex}]")
         _lastMeasurement.value = measurement
     }
 

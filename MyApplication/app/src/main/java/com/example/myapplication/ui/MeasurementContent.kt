@@ -21,7 +21,8 @@ import java.util.Locale
 
 /**
  * Содержимое вкладки «Замеры»: одно текущее значение, полученное от подключённого
- * BLE-устройства. Показывает и декодированный UTF-8 текст (крупно), и сырые байты в HEX.
+ * BLE-устройства. Крупно — числовое значение (разобранное из текстовой нагрузки),
+ * ниже — сырые байты в HEX как «истина».
  *
  * Рисуется без собственного Scaffold — внутри [contentPadding] общего Scaffold MainScreen.
  *
@@ -63,16 +64,20 @@ fun MeasurementContent(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
-        // Текущее значение крупно
+        // Текущее значение крупно: типизированное число, если нагрузка парсится; иначе
+        // показываем текст как есть, иначе «—». Так значение не пропадает при любом формате.
+        val display = measurement.numericValue
+            ?.let { String.format(Locale.US, "%.2f", it) }
+            ?: measurement.asText.ifBlank { "—" }
         Text(
-            text = measurement.asText.ifBlank { "—" },
+            text = display,
             style = MaterialTheme.typography.displaySmall,
             fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(vertical = 24.dp),
         )
 
-        // Сырые байты в HEX
+        // Сырые байты в HEX — ground truth, показываем всегда.
         Text(
             text = "HEX: ${measurement.asHex.ifBlank { "—" }}",
             style = MaterialTheme.typography.bodyMedium,
@@ -83,7 +88,7 @@ fun MeasurementContent(
 
         // Время получения
         Text(
-            text = "Обновлено: ${formatTime(measurement.timestampMs)}",
+            text = "Обновлено: ${TIME_FORMAT.format(Date(measurement.timestampMs))}",
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 8.dp),
@@ -91,5 +96,8 @@ fun MeasurementContent(
     }
 }
 
-private fun formatTime(timestampMs: Long): String =
-    SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(timestampMs))
+// Один форматтер на файл вместо создания нового на каждую рекомпозицию.
+// Используется только на main-потоке, поэтому потокобезопасность SimpleDateFormat не нужна.
+// Locale.US (а не getDefault) намеренно: "HH:mm:ss" локале-независим, зато это истинный
+// синглтон без предупреждения ConstantLocale о смене локали в рантайме.
+private val TIME_FORMAT = SimpleDateFormat("HH:mm:ss", Locale.US)

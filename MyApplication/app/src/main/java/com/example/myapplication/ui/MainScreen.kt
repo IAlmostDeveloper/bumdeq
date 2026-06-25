@@ -5,7 +5,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -31,7 +31,7 @@ import com.example.myapplication.ui.bluetooth.Measurement
 /** Вкладки нижнего меню. BLE живёт во вкладке [DEVICES], данные с него — в [MEASUREMENTS]. */
 private enum class MainTab(val title: String, val icon: ImageVector) {
     DEVICES("Устройства", Icons.Filled.Search),
-    MEASUREMENTS("Замеры", Icons.Filled.List),
+    MEASUREMENTS("Замеры", Icons.AutoMirrored.Filled.List),
     SETTINGS("Настройки", Icons.Filled.Settings),
 }
 
@@ -40,7 +40,7 @@ private enum class MainTab(val title: String, val icon: ImageVector) {
  * с topBar и bottomBar; контент вкладок рисуется внутри его paddings, без вложенных
  * Scaffold. Подключение к BLE-устройствам вынесено во вкладку «Устройства».
  *
- * Колбэки BLE те же, что были у BluetoothScreen — пробрасываются во вкладку как есть.
+ * Колбэки BLE пробрасываются во вкладку [BluetoothContent] как есть.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

@@ -59,10 +59,22 @@ data class Measurement(
     val deviceName: String?,
     val timestampMs: Long,
 ) {
-    /** Декодированный UTF-8 текст. */
-    val asText: String get() = raw.toString(Charsets.UTF_8)
+    /**
+     * Полезная нагрузка как текст: устройство передаёт значение ASCII-строкой
+     * (напр. "12.34"). Обрезаем пробелы и управляющие символы (CR/LF/нуль-терминатор).
+     */
+    val asText: String get() = raw.toString(Charsets.UTF_8).trim { it.isWhitespace() || it.isISOControl() }
 
-    /** Сырые байты в HEX, через пробел: "A1 0F 23". */
+    /**
+     * Типизированное числовое значение замера, разобранное из текстовой нагрузки [asText].
+     *
+     * Прибор шлёт число текстом, поэтому парсим строку, а не интерпретируем сырые байты
+     * как бинарный Float (это давало мусор/пустоту и ломало показ). Готово для расчётов
+     * CF/W' поверх. null, если строка — не число.
+     */
+    val numericValue: Float? get() = asText.toFloatOrNull()
+
+    /** Сырые байты в HEX, через пробел: "A1 0F 23" — «истина», показываем всегда. */
     val asHex: String get() = raw.joinToString(" ") { "%02X".format(it) }
 
     // ByteArray в data class требует ручных equals/hashCode для корректного сравнения.

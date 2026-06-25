@@ -35,51 +35,18 @@ import androidx.compose.ui.unit.dp
 import com.example.myapplication.ui.theme.MyApplicationTheme
 
 /**
- * Экран поиска / выбора / сохранения Bluetooth-устройств.
+ * Содержимое экрана поиска / выбора / сохранения Bluetooth-устройств.
  *
- * Чистый UI: рисуется как функция от [state], а все действия пробрасываются наверх
- * через колбэки. Это позволяет подключить реальный BLE (или ViewModel) позже,
- * не трогая разметку, и показывать @Preview на mock-данных.
+ * Чистый UI: рисуется как функция от [state], все действия пробрасываются наверх через
+ * колбэки. Без собственного Scaffold — рисуется внутри переданного [contentPadding]
+ * общего Scaffold (см. MainScreen), чтобы избежать вложенных Scaffold.
  *
  * @param state            состояние экрана (списки, флаг сканирования, сохранённый MAC)
  * @param onScan           начать поиск новых устройств
  * @param onStopScan       остановить поиск
  * @param onConnect        подключиться к устройству
- * @param onSaveSelected   запомнить устройство как выбранное (DataStore — позже)
+ * @param onSaveSelected   запомнить устройство как выбранное (DataStore)
  * @param onEnableBluetooth запрос на включение адаптера (показывается, когда BT выключен)
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun BluetoothScreen(
-    state: BleScreenState,
-    onScan: () -> Unit,
-    onStopScan: () -> Unit,
-    onConnect: (BleDeviceUi) -> Unit,
-    onSaveSelected: (BleDeviceUi) -> Unit,
-    onEnableBluetooth: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    // Автономная обёртка со своим Scaffold — для @Preview и использования вне вкладок.
-    Scaffold(
-        modifier = modifier.fillMaxSize(),
-        topBar = { TopAppBar(title = { Text("Bluetooth устройства") }) },
-    ) { innerPadding ->
-        BluetoothContent(
-            state = state,
-            onScan = onScan,
-            onStopScan = onStopScan,
-            onConnect = onConnect,
-            onSaveSelected = onSaveSelected,
-            onEnableBluetooth = onEnableBluetooth,
-            contentPadding = innerPadding,
-        )
-    }
-}
-
-/**
- * Тело экрана без собственного Scaffold — рисуется внутри переданного [contentPadding].
- * Используется и в [BluetoothScreen], и как контент вкладки в нижней навигации,
- * чтобы избежать вложенных Scaffold.
  */
 @Composable
 fun BluetoothContent(
@@ -348,17 +315,24 @@ private val previewState = BleScreenState(
     savedAddress = "AA:BB:CC:DD:EE:01",
 )
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Preview(showBackground = true, showSystemUi = true)
 @Composable
-private fun BluetoothScreenPreview() {
+private fun BluetoothContentPreview() {
     MyApplicationTheme {
-        BluetoothScreen(
-            state = previewState,
-            onScan = {},
-            onStopScan = {},
-            onConnect = {},
-            onSaveSelected = {},
-            onEnableBluetooth = {},
-        )
+        // Одноразовый Scaffold только для превью — в проде Scaffold даёт MainScreen.
+        Scaffold(
+            topBar = { TopAppBar(title = { Text("Bluetooth устройства") }) },
+        ) { innerPadding ->
+            BluetoothContent(
+                state = previewState,
+                onScan = {},
+                onStopScan = {},
+                onConnect = {},
+                onSaveSelected = {},
+                onEnableBluetooth = {},
+                contentPadding = innerPadding,
+            )
+        }
     }
 }
