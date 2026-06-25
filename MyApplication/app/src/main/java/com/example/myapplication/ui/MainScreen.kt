@@ -1,15 +1,25 @@
 package com.example.myapplication.ui
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -23,6 +33,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.dp
 import com.example.myapplication.ui.bluetooth.BleDeviceUi
 import com.example.myapplication.ui.bluetooth.BleScreenState
 import com.example.myapplication.ui.bluetooth.BluetoothContent
@@ -37,8 +48,12 @@ private enum class MainTab(val title: String, val icon: ImageVector) {
 
 /**
  * Корневой экран с нижней навигацией ([NavigationBar]). Держит один общий [Scaffold]
- * с topBar и bottomBar; контент вкладок рисуется внутри его paddings, без вложенных
- * Scaffold. Подключение к BLE-устройствам вынесено во вкладку «Устройства».
+ * с topBar, bottomBar и FAB; контент вкладок рисуется внутри его paddings, без вложенных
+ * Scaffold.
+ *
+ * Запуск замера со вкладки «Замеры» открывает отдельную полноэкранную страницу (без нижней
+ * навигации) — её состояние [activeMeasurement] поднято над ветвлением, чтобы возврат
+ * назад сохранял выбранную вкладку.
  *
  * Колбэки BLE пробрасываются во вкладку [BluetoothContent] как есть.
  */
@@ -55,6 +70,18 @@ fun MainScreen(
     modifier: Modifier = Modifier,
 ) {
     var selectedTab by rememberSaveable { mutableStateOf(MainTab.DEVICES) }
+    var activeMeasurement by rememberSaveable { mutableStateOf<MeasurementType?>(null) }
+    var showPicker by rememberSaveable { mutableStateOf(false) }
+
+    // Запущенный замер — отдельная страница поверх вкладок. Системная «Назад» возвращает к ним.
+    val active = activeMeasurement
+    if (active != null) {
+        BackHandler { activeMeasurement = null }
+        when (active) {
+            MeasurementType.CRITICAL_FORCE -> CriticalForceScreen(onBack = { activeMeasurement = null })
+        }
+        return
+    }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -68,6 +95,14 @@ fun MainScreen(
                         icon = { Icon(tab.icon, contentDescription = tab.title) },
                         label = { Text(tab.title) },
                     )
+                }
+            }
+        },
+        floatingActionButton = {
+            // Запуск замеров доступен только на вкладке «Замеры».
+            if (selectedTab == MainTab.MEASUREMENTS) {
+                FloatingActionButton(onClick = { showPicker = true }) {
+                    Icon(Icons.Filled.Add, contentDescription = "Запустить замер")
                 }
             }
         },
@@ -93,6 +128,45 @@ fun MainScreen(
                 contentPadding = innerPadding,
             )
         }
+    }
+
+    // Окно выбора замера для запуска.
+    if (showPicker) {
+        MeasurementPickerSheet(
+            onDismiss = { showPicker = false },
+            onSelect = { type ->
+                showPicker = false
+                activeMeasurement = type
+            },
+        )
+    }
+}
+
+/** Bottom sheet со списком доступных для запуска замеров. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MeasurementPickerSheet(
+    onDismiss: () -> Unit,
+    onSelect: (MeasurementType) -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Text(
+            text = "Доступные замеры",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+        )
+        MeasurementType.entries.forEach { type ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onSelect(type) }
+                    .padding(horizontal = 24.dp, vertical = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(type.title, style = MaterialTheme.typography.bodyLarge)
+            }
+        }
+        Spacer(Modifier.height(16.dp)) // отступ от системной навигации снизу
     }
 }
 
