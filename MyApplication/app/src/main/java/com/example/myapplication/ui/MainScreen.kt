@@ -25,9 +25,11 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -38,6 +40,7 @@ import com.example.myapplication.ui.bluetooth.BleDeviceUi
 import com.example.myapplication.ui.bluetooth.BleScreenState
 import com.example.myapplication.ui.bluetooth.BluetoothContent
 import com.example.myapplication.ui.bluetooth.Measurement
+import kotlinx.coroutines.launch
 
 /** Вкладки нижнего меню. BLE живёт во вкладке [DEVICES], данные с него — в [MEASUREMENTS]. */
 private enum class MainTab(val title: String, val icon: ImageVector) {
@@ -149,7 +152,14 @@ private fun MeasurementPickerSheet(
     onDismiss: () -> Unit,
     onSelect: (MeasurementType) -> Unit,
 ) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    val sheetState = rememberModalBottomSheetState()
+    val scope = rememberCoroutineScope()
+
+    ModalBottomSheet(
+        // Свайп / тап по затемнению — Material3 проигрывает скрытие сам, затем зовёт onDismiss.
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+    ) {
         Text(
             text = "Доступные замеры",
             style = MaterialTheme.typography.titleMedium,
@@ -159,7 +169,14 @@ private fun MeasurementPickerSheet(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { onSelect(type) }
+                    .clickable {
+                        // Программный выбор: сначала анимируем скрытие листа, и только по
+                        // завершении навигируем — иначе sheetState не задействован и лист
+                        // исчезает рывком (showPicker=false выдёргивает его из композиции).
+                        scope.launch { sheetState.hide() }.invokeOnCompletion {
+                            if (!sheetState.isVisible) onSelect(type)
+                        }
+                    }
                     .padding(horizontal = 24.dp, vertical = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
