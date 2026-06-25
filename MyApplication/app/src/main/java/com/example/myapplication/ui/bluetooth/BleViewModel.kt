@@ -39,11 +39,14 @@ class BleViewModel(private val manager: BleManager) : ViewModel() {
             isScanning = scanning,
             savedAddress = saved,
         )
-    }.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5_000),
-        initialValue = BleScreenState(),
-    )
+    }
+        // 6-й поток (combine типизирован до 5) — подмешиваем состояние адаптера.
+        .combine(manager.bluetoothEnabled) { st, btOn -> st.copy(bluetoothEnabled = btOn) }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = BleScreenState(),
+        )
 
     /** Последний замер с подключённого устройства — для вкладки «Замеры». */
     val lastMeasurement: StateFlow<Measurement?> = manager.lastMeasurement
@@ -73,6 +76,7 @@ class BleViewModel(private val manager: BleManager) : ViewModel() {
         // disconnect() сам проверяет наличие BLUETOOTH_CONNECT и тихо выходит, если его нет.
         @Suppress("MissingPermission")
         manager.disconnect()
+        manager.release() // снять broadcast-подписку на состояние адаптера
     }
 
     companion object {

@@ -12,7 +12,10 @@ import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Handler
@@ -51,7 +54,15 @@ class BleManager(private val appContext: Context) {
     private val _lastMeasurement = MutableStateFlow<Measurement?>(null)
     val lastMeasurement: StateFlow<Measurement?> = _lastMeasurement.asStateFlow()
 
+    /** Включён ли адаптер Bluetooth (живо обновляется через broadcast). */
+    private val _bluetoothEnabled = MutableStateFlow(adapter?.isEnabled == true)
+    val bluetoothEnabled: StateFlow<Boolean> = _bluetoothEnabled.asStateFlow()
+
     private var gatt: BluetoothGatt? = null
+
+    // MAC устройства, с которым сейчас идёт работа. Нужен, чтобы при closeGatt()
+    // (тихий teardown без колбэка) корректно пометить устройство как DISCONNECTED.
+    private var activeAddress: String? = null
 
     // Имя устройства, к которому подключаемся (для подписи замеров — в колбэке его не достать без разрешения).
     private var connectingName: String? = null
@@ -59,6 +70,25 @@ class BleManager(private val appContext: Context) {
     // Авто-остановка скана по таймауту, чтобы спиннер не висел вечно при пустом эфире.
     private val mainHandler = Handler(Looper.getMainLooper())
     private val scanTimeoutRunnable = Runnable { stopScanInternal() }
+    private val connectTimeoutRunnable = Runnable { handleConnectTimeout() }
+
+    // Следим за включением/выключением Bluetooth, чтобы UI узнавал об этом сразу.
+    private val btStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
+                _bluetoothEnabled.value = adapter?.isEnabled == true
+            }
+        }
+    }
+
+    init {
+        appContext.registerReceiver(btStateReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))
+    }
+
+    /** Снять подписку на системные broadcast. Вызывать при уничтожении владельца (ViewModel.onCleared). */
+    fun release() {
+        runCatching { appContext.unregisterReceiver(btStateReceiver) }
+    }
 
     val isBluetoothEnabled: Boolean get() = adapter?.isEnabled == true
 
@@ -156,11 +186,37 @@ class BleManager(private val appContext: Context) {
             return
         }
 
-        closeGatt()
+        closeGatt() // тихо закрываем предыдущее соединение → оно помечается DISCONNECTED внутри
         // Запоминаем имя из известных устройств — в колбэке его не достать без лишних проверок.
         connectingName = deviceNameFor(address)
+        activeAddress = address
         setState(address, ConnectionState.CONNECTING)
-        gatt = device.connectGatt(appContext, false, gattCallback)
+
+        val newGatt = device.connectGatt(appContext, false, gattCallback)
+        if (newGatt == null) {
+            // connectGatt() вернул null — колбэка не будет никогда, гасим CONNECTING сразу.
+            Log.w(TAG, "connectGatt returned null for $address")
+            setState(address, ConnectionState.DISCONNECTED)
+            activeAddress = null
+            return
+        }
+        gatt = newGatt
+        // Таймаут подключения: если колбэк не придёт (null-gatt/OEM-баг), CONNECTING не залипнет.
+        mainHandler.removeCallbacks(connectTimeoutRunnable)
+        mainHandler.postDelayed(connectTimeoutRunnable, CONNECT_TIMEOUT_MS)
+    }
+
+    /** Таймаут подключения: если за CONNECT_TIMEOUT_MS не дошли до CONNECTED — рвём и гасим спиннер. */
+    private fun handleConnectTimeout() {
+        val address = activeAddress ?: return
+        if (currentState(address) != ConnectionState.CONNECTING) return
+        Log.w(TAG, "Connect timeout for $address")
+        if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.BLUETOOTH_CONNECT)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            gatt?.disconnect()
+        }
+        closeGatt()
     }
 
     /** Имя устройства по MAC из ранее найденных/сопряжённых. */
@@ -176,8 +232,19 @@ class BleManager(private val appContext: Context) {
         closeGatt()
     }
 
-    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+    /**
+     * Тихий teardown GATT. В отличие от disconnect(), BluetoothGatt.close() НЕ доставляет
+     * onConnectionStateChange(DISCONNECTED) — поэтому состояние активного устройства
+     * помечаем здесь вручную, иначе оно навсегда залипнет в CONNECTED/CONNECTING.
+     * close() помечен @RequiresPermission, но освобождает ЛОКАЛЬНЫЕ ресурсы и должен
+     * выполняться всегда (даже если разрешение отозвали) — иначе утечёт GATT-клиент.
+     * Поэтому guard'ить нельзя, осознанно подавляем проверку.
+     */
+    @SuppressLint("MissingPermission")
     private fun closeGatt() {
+        mainHandler.removeCallbacks(connectTimeoutRunnable)
+        activeAddress?.let { setState(it, ConnectionState.DISCONNECTED) }
+        activeAddress = null
         gatt?.close()
         gatt = null
     }
@@ -188,8 +255,18 @@ class BleManager(private val appContext: Context) {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             val address = gatt.device.address
             Log.d(TAG, "onConnectionStateChange addr=$address status=$status newState=$newState")
+
+            // Любой не-SUCCESS статус (частый случай — 133) трактуем как обрыв, независимо от newState.
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                Log.w(TAG, "GATT error status=$status for $address")
+                setState(address, ConnectionState.DISCONNECTED)
+                closeGatt()
+                return
+            }
+
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
+                    mainHandler.removeCallbacks(connectTimeoutRunnable) // успели — таймаут не нужен
                     setState(address, ConnectionState.CONNECTED)
                     if (hasConnectPermission) gatt.discoverServices()
                 }
@@ -237,22 +314,37 @@ class BleManager(private val appContext: Context) {
             Log.d(TAG, "Descriptor write status=$status")
         }
 
-        // Новый API (Android 13+): значение приходит параметром, без обращения к .value.
+        // API 33+ (TIRAMISU): значение приходит параметром.
         override fun onCharacteristicChanged(
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray,
+        ) = handleNotification(gatt, value)
+
+        // API 31/32: 3-арг перегрузки ещё нет — стек зовёт эту, значение лежит в characteristic.value.
+        // Без неё уведомления молча терялись бы на Android 12/12L (а это наш minSdk = 31).
+        @Deprecated("Deprecated in Java")
+        @Suppress("DEPRECATION")
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
         ) {
-            val address = gatt.device.address
-            val measurement = Measurement(
-                raw = value.copyOf(),
-                deviceAddress = address,
-                deviceName = connectingName,
-                timestampMs = System.currentTimeMillis(),
-            )
-            Log.d(TAG, "Received from $address: ${measurement.asText} (${measurement.asHex})")
-            _lastMeasurement.value = measurement
+            val value = characteristic.value ?: return
+            handleNotification(gatt, value)
         }
+    }
+
+    /** Единый обработчик уведомления для обеих перегрузок onCharacteristicChanged. */
+    private fun handleNotification(gatt: BluetoothGatt, value: ByteArray) {
+        val address = gatt.device.address
+        val measurement = Measurement(
+            raw = value.copyOf(), // стек может переиспользовать буфер — копируем при сохранении
+            deviceAddress = address,
+            deviceName = connectingName,
+            timestampMs = System.currentTimeMillis(),
+        )
+        Log.d(TAG, "Received from $address: ${measurement.asText} (${measurement.asHex})")
+        _lastMeasurement.value = measurement
     }
 
     /**
@@ -291,6 +383,7 @@ class BleManager(private val appContext: Context) {
     companion object {
         private const val TAG = "BLE"
         private const val SCAN_DURATION_MS = 12_000L
+        private const val CONNECT_TIMEOUT_MS = 15_000L
 
         val SERVICE_UUID: UUID = UUID.fromString("0000baad-0000-1000-8000-00805f9b34fb")
         val CHARACTERISTIC_UUID: UUID = UUID.fromString("0000f00d-0000-1000-8000-00805f9b34fb")

@@ -2,6 +2,8 @@ package com.example.myapplication
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
@@ -43,6 +45,19 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    @SuppressLint("MissingPermission")
+    private val enableBtLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            if (ActivityCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.BLUETOOTH_CONNECT
+                ) == PackageManager.PERMISSION_GRANTED && viewModel.isBluetoothEnabled
+            ) {
+                viewModel.loadBondedDevices()
+                startScanChecked()
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -65,6 +80,7 @@ class MainActivity : ComponentActivity() {
                     onStopScan = { stopScanChecked() },
                     onConnect = { device -> connectChecked(device) },
                     onSaveSelected = { device -> viewModel.saveSelected(device) },
+                    onEnableBluetooth = { enableBluetoothChecked() },
                 )
             }
         }
@@ -111,6 +127,15 @@ class MainActivity : ComponentActivity() {
     private fun connectChecked(device: BleDeviceUi) {
         if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
             viewModel.connect(device)
+        } else {
+            requestBtPermissions()
+        }
+    }
+
+    /** Показать системный диалог включения Bluetooth (требует BLUETOOTH_CONNECT на API 31+). */
+    private fun enableBluetoothChecked() {
+        if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
+            enableBtLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
         } else {
             requestBtPermissions()
         }

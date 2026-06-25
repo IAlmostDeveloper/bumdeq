@@ -33,14 +33,16 @@ data class BleDeviceUi(
  *
  * @param bondedDevices  системно сопряжённые устройства (верхняя секция)
  * @param scannedDevices устройства, найденные сканированием (нижняя секция)
- * @param isScanning      идёт ли сейчас поиск (индикатор + кнопка «Стоп»)
- * @param savedAddress    MAC последнего выбранного устройства (DataStore); подсвечивается в списке
+ * @param isScanning       идёт ли сейчас поиск (индикатор + кнопка «Стоп»)
+ * @param savedAddress     MAC последнего выбранного устройства (DataStore); подсвечивается в списке
+ * @param bluetoothEnabled включён ли адаптер Bluetooth; при false показываем баннер и блокируем поиск
  */
 data class BleScreenState(
     val bondedDevices: List<BleDeviceUi> = emptyList(),
     val scannedDevices: List<BleDeviceUi> = emptyList(),
     val isScanning: Boolean = false,
     val savedAddress: String? = null,
+    val bluetoothEnabled: Boolean = true,
 )
 
 /**

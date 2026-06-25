@@ -41,11 +41,12 @@ import com.example.myapplication.ui.theme.MyApplicationTheme
  * через колбэки. Это позволяет подключить реальный BLE (или ViewModel) позже,
  * не трогая разметку, и показывать @Preview на mock-данных.
  *
- * @param state          состояние экрана (списки, флаг сканирования, сохранённый MAC)
- * @param onScan         начать поиск новых устройств
- * @param onStopScan     остановить поиск
- * @param onConnect      подключиться к устройству
- * @param onSaveSelected запомнить устройство как выбранное (DataStore — позже)
+ * @param state            состояние экрана (списки, флаг сканирования, сохранённый MAC)
+ * @param onScan           начать поиск новых устройств
+ * @param onStopScan       остановить поиск
+ * @param onConnect        подключиться к устройству
+ * @param onSaveSelected   запомнить устройство как выбранное (DataStore — позже)
+ * @param onEnableBluetooth запрос на включение адаптера (показывается, когда BT выключен)
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -55,6 +56,7 @@ fun BluetoothScreen(
     onStopScan: () -> Unit,
     onConnect: (BleDeviceUi) -> Unit,
     onSaveSelected: (BleDeviceUi) -> Unit,
+    onEnableBluetooth: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // Автономная обёртка со своим Scaffold — для @Preview и использования вне вкладок.
@@ -68,6 +70,7 @@ fun BluetoothScreen(
             onStopScan = onStopScan,
             onConnect = onConnect,
             onSaveSelected = onSaveSelected,
+            onEnableBluetooth = onEnableBluetooth,
             contentPadding = innerPadding,
         )
     }
@@ -85,6 +88,7 @@ fun BluetoothContent(
     onStopScan: () -> Unit,
     onConnect: (BleDeviceUi) -> Unit,
     onSaveSelected: (BleDeviceUi) -> Unit,
+    onEnableBluetooth: () -> Unit,
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
 ) {
@@ -95,6 +99,11 @@ fun BluetoothContent(
             .padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        // ── Баннер: Bluetooth выключен ───────────────────────────────────
+        if (!state.bluetoothEnabled) {
+            item { BluetoothDisabledBanner(onEnableBluetooth = onEnableBluetooth) }
+        }
+
         // ── Секция 1: сопряжённые устройства ─────────────────────────────
         item {
             SectionHeader("Сопряжённые устройства")
@@ -122,6 +131,7 @@ fun BluetoothContent(
         item {
             ScanSectionHeader(
                 isScanning = state.isScanning,
+                scanEnabled = state.bluetoothEnabled,
                 onScan = onScan,
                 onStopScan = onStopScan,
             )
@@ -160,6 +170,7 @@ private fun SectionHeader(title: String) {
 @Composable
 private fun ScanSectionHeader(
     isScanning: Boolean,
+    scanEnabled: Boolean,
     onScan: () -> Unit,
     onStopScan: () -> Unit,
 ) {
@@ -182,7 +193,36 @@ private fun ScanSectionHeader(
         if (isScanning) {
             OutlinedButton(onClick = onStopScan) { Text("Стоп") }
         } else {
-            Button(onClick = onScan) { Text("Поиск") }
+            // При выключенном Bluetooth поиск заблокирован — иначе тихий no-op без обратной связи.
+            Button(onClick = onScan, enabled = scanEnabled) { Text("Поиск") }
+        }
+    }
+}
+
+/** Баннер о выключенном Bluetooth с кнопкой включения. */
+@Composable
+private fun BluetoothDisabledBanner(onEnableBluetooth: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer,
+        ),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = "Bluetooth выключен",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(8.dp))
+            Button(onClick = onEnableBluetooth) { Text("Включить") }
         }
     }
 }
@@ -318,6 +358,7 @@ private fun BluetoothScreenPreview() {
             onStopScan = {},
             onConnect = {},
             onSaveSelected = {},
+            onEnableBluetooth = {},
         )
     }
 }

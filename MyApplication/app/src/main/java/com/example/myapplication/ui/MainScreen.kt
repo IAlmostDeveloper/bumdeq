@@ -51,6 +51,7 @@ fun MainScreen(
     onStopScan: () -> Unit,
     onConnect: (BleDeviceUi) -> Unit,
     onSaveSelected: (BleDeviceUi) -> Unit,
+    onEnableBluetooth: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var selectedTab by rememberSaveable { mutableStateOf(MainTab.DEVICES) }
@@ -78,6 +79,7 @@ fun MainScreen(
                 onStopScan = onStopScan,
                 onConnect = onConnect,
                 onSaveSelected = onSaveSelected,
+                onEnableBluetooth = onEnableBluetooth,
                 contentPadding = innerPadding,
             )
 
