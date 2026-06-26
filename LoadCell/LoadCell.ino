@@ -15,6 +15,18 @@
  */
 
 #include "HX711.h"
+#include "nimble.h"
+#include <WiFi.h>
+#include <esp_now.h>
+
+uint8_t receiverMAC[] = {0xA8, 0x48, 0xFA, 0xDC, 0xC1, 0x3C};
+
+esp_now_peer_info_t peerInfo;
+
+void onSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
+  Serial.print("Send status: ");
+  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "OK" : "FAIL");
+}
 
 // ─────────────────────────── Настройки пинов ───────────────────────────
 // При необходимости поменяйте номера под свою плату и разводку.
@@ -63,6 +75,26 @@ float rawToKilograms(long raw) {
 // ───────────────────────────────── setup ───────────────────────────────
 void setup() {
     Serial.begin(115200);
+    initNimBLEServer();
+
+    WiFi.mode(WIFI_STA);
+
+    if (esp_now_init() != ESP_OK) {
+        Serial.println("ESP-NOW init failed");
+        return;
+    }
+
+    esp_now_register_send_cb(onSent);
+
+    memcpy(peerInfo.peer_addr, receiverMAC, 6);
+    peerInfo.channel = 0;
+    peerInfo.encrypt = false;
+
+    if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+        Serial.println("Peer add failed");
+        return;
+    }
+
     Serial.println("\nStarting HX711_LoadCell");
 
     // Инициализация АЦП: указываем пины данных и тактирования.
@@ -91,8 +123,13 @@ void loop() {
         Serial.print('\t');
         Serial.print(kg, 3);   // 3 знака после запятой
         Serial.println(" кг");
+        notifyValue(kg);
+        esp_now_send(
+            receiverMAC,
+            (uint8_t*)&kg,
+            sizeof(kg)
+        );
     } else {
-        Serial.println("HX711 не найден — проверьте подключение DT/SCK");
-        delay(500);
+        delay(300);
     }
 }
