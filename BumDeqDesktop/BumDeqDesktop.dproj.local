@@ -1,0 +1,9 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<BorlandProject>
+	<Transactions>
+    <Transaction>2026/07/02 17:26:56.000.515,=C:\Users\developer\Documents\Embarcadero\Studio\Projects\Unit2.pas</Transaction>
+    <Transaction>2026/07/02 17:27:43.000.965,C:\Users\developer\Documents\Embarcadero\Studio\Projects\Unit2.pas=D:\Workspace\Bumdeq-proto\BumDeqDesktop\MainForm.pas</Transaction>
+    <Transaction>2026/07/02 17:27:43.000.965,C:\Users\developer\Documents\Embarcadero\Studio\Projects\Unit2.dfm=D:\Workspace\Bumdeq-proto\BumDeqDesktop\MainForm.dfm</Transaction>
+    <Transaction>2026/07/02 17:28:13.000.712,C:\Users\developer\Documents\Embarcadero\Studio\Projects\Project2.dproj=D:\Workspace\Bumdeq-proto\BumDeqDesktop\BumDeqDesktop.dproj</Transaction>
+  </Transactions>
+</BorlandProject>
