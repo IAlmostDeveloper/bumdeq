@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -34,16 +35,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import ru.ialmostdeveloper.bumdeq.criticalforce.CriticalForceResult
 import ru.ialmostdeveloper.bumdeq.ui.bluetooth.BleDeviceUi
 import ru.ialmostdeveloper.bumdeq.ui.bluetooth.BleScreenState
 import ru.ialmostdeveloper.bumdeq.ui.bluetooth.BluetoothContent
 import ru.ialmostdeveloper.bumdeq.ui.bluetooth.Measurement
+import java.util.UUID
 import kotlinx.coroutines.launch
 
 /** Вкладки нижнего меню. BLE живёт во вкладке [DEVICES], данные с него — в [MEASUREMENTS]. */
 private enum class MainTab(val title: String, val icon: ImageVector) {
     DEVICES("Устройства", Icons.Filled.Search),
     MEASUREMENTS("Замеры", Icons.AutoMirrored.Filled.List),
+    RESULTS("Результаты", Icons.Filled.CheckCircle),
     SETTINGS("Настройки", Icons.Filled.Settings),
 }
 
@@ -63,6 +67,10 @@ private enum class MainTab(val title: String, val icon: ImageVector) {
 fun MainScreen(
     bleState: BleScreenState,
     measurement: Measurement?,
+    savedResults: List<CriticalForceResult>,
+    onSaveResult: (CriticalForceResult) -> Unit,
+    onDeleteResult: (UUID) -> Unit,
+    onExportJson: () -> String,
     onScan: () -> Unit,
     onStopScan: () -> Unit,
     onConnect: (BleDeviceUi) -> Unit,
@@ -81,6 +89,7 @@ fun MainScreen(
         when (active) {
             MeasurementType.CRITICAL_FORCE -> CriticalForceScreen(
                 measurement = measurement,
+                onSaved = onSaveResult,
                 onBack = { activeMeasurement = null },
             )
         }
@@ -124,6 +133,13 @@ fun MainScreen(
 
             MainTab.MEASUREMENTS -> MeasurementContent(
                 measurement = measurement,
+                contentPadding = innerPadding,
+            )
+
+            MainTab.RESULTS -> ResultsContent(
+                results = savedResults,
+                onDelete = onDeleteResult,
+                onExportJson = onExportJson,
                 contentPadding = innerPadding,
             )
 

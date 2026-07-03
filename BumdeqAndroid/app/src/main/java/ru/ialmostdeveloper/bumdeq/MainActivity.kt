@@ -14,6 +14,7 @@ import androidx.compose.runtime.getValue
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ru.ialmostdeveloper.bumdeq.ui.MainScreen
+import ru.ialmostdeveloper.bumdeq.ui.MeasurementsViewModel
 import ru.ialmostdeveloper.bumdeq.ui.bluetooth.BleViewModel
 import ru.ialmostdeveloper.bumdeq.ui.theme.BumdeqTheme
 
@@ -25,6 +26,7 @@ import ru.ialmostdeveloper.bumdeq.ui.theme.BumdeqTheme
 class MainActivity : ComponentActivity() {
 
     private lateinit var viewModel: BleViewModel
+    private lateinit var measurementsViewModel: MeasurementsViewModel
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
@@ -52,15 +54,24 @@ class MainActivity : ComponentActivity() {
             this,
             BleViewModel.factory(applicationContext),
         )[BleViewModel::class.java]
+        measurementsViewModel = ViewModelProvider(
+            this,
+            MeasurementsViewModel.factory(applicationContext),
+        )[MeasurementsViewModel::class.java]
 
         setContent {
             val state by viewModel.state.collectAsStateWithLifecycle()
             val measurement by viewModel.lastMeasurement.collectAsStateWithLifecycle()
+            val savedResults by measurementsViewModel.results.collectAsStateWithLifecycle()
 
             BumdeqTheme {
                 MainScreen(
                     bleState = state,
                     measurement = measurement,
+                    savedResults = savedResults,
+                    onSaveResult = { measurementsViewModel.save(it) },
+                    onDeleteResult = { measurementsViewModel.delete(it) },
+                    onExportJson = { measurementsViewModel.exportJson() },
                     onScan = { withPermission(Manifest.permission.BLUETOOTH_SCAN) { viewModel.startScan() } },
                     onStopScan = { withPermission(Manifest.permission.BLUETOOTH_SCAN) { viewModel.stopScan() } },
                     onConnect = { device ->

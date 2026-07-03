@@ -1,7 +1,6 @@
 package ru.ialmostdeveloper.bumdeq.criticalforce
 
-import android.content.Context
-import androidx.compose.ui.platform.LocalContext
+import java.util.UUID
 import kotlin.math.max
 
 /**
@@ -20,7 +19,7 @@ data class ForceSample(
 /** Способ свёртки отсчётов внутри одного 7-сек. сокращения в одно число. */
 enum class RoundAggregation {
     /** Среднее — каноническое определение Giles et al. 2021. */
-    MEAN,
+    AVERAGE,
 
     /** Медиана — устойчивее к рывкам/спайкам контакта с зацепом (так делают некоторые реализации). */
     MEDIAN,
@@ -46,14 +45,11 @@ data class CriticalForceProtocol(
     val restSeconds: Double = 3.0,
     val plateauRounds: Int = 6,
     val edgeMillimeters: Int = 20,
-    val aggregation: RoundAggregation = RoundAggregation.MEAN,
+    val aggregation: RoundAggregation = RoundAggregation.AVERAGE,
     val workForceThresholdKg: Double = 0.0,
 ) {
-    /** Полный период одного раунда, с (тяга + отдых). */
-    val cycleSeconds: Double get() = workSeconds + restSeconds
-
-    /** Полная длительность теста, с. */
-    val totalSeconds: Double get() = rounds * cycleSeconds
+    val roundSeconds: Double get() = workSeconds + restSeconds
+    val totalSeconds: Double get() = rounds * roundSeconds
 
     init {
         require(rounds > 0) { "rounds must be > 0, got $rounds" }
@@ -64,23 +60,29 @@ data class CriticalForceProtocol(
 }
 
 /**
- * Свёрнутое усилие одного раунда — для графика и контроля выхода на плато.
+ * Свёрнутое усилие одного раунда — для графика, контроля выхода на плато и пораундовой разбивки.
  *
  * @param index       номер раунда, 1-based
  * @param forceKg     усилие раунда после свёртки, кг; [Double.NaN], если в окне не было отсчётов
+ * @param peakForceKg макс. мгновенная сила в раунде, кг; [Double.NaN], если в окне не было отсчётов
  * @param sampleCount сколько отсчётов попало в рабочее окно (после фильтра порога)
  */
 data class RoundForce(
     val index: Int,
     val forceKg: Double,
+    val peakForceKg: Double,
     val sampleCount: Int,
 ) {
     val hasData: Boolean get() = sampleCount > 0 && !forceKg.isNaN()
 }
 
 /**
- * Результат расчёта Critical Force.
+ * Результат расчёта Critical Force. Он же — сохраняемая запись замера: несёт [id] и
+ * редактируемое [description] для истории/хранилища.
  *
+ * @param id                     идентификатор замера (для хранилища/истории); новый на каждый расчёт
+ * @param description            произвольное описание, задаётся пользователем; по умолчанию пустое
+ * @param createdAtMs            момент расчёта, epoch-мс (System.currentTimeMillis) — дата замера
  * @param criticalForceKg        CF — плато по последним [CriticalForceProtocol.plateauRounds] раундам, кг
  * @param peakForceKg            PF — макс. мгновенная сила за тест, кг
  * @param wPrimeKgS              W′ — импульс над CF (площадь силы выше CF по времени), кг·с
@@ -90,6 +92,7 @@ data class RoundForce(
  * @param cfToMvcPercent         CF/MVC·100% — индекс утомляемости предплечья; null, если MVC не задан
  * @param cfToBodyWeightPercent  CF/вес·100%; null, если вес не задан
  * @param peakToBodyWeightPercent PF/вес·100%; null, если вес не задан
+ * @param bodyWeightKg           вес тела, кг, введённый для замера; null, если не задан
  */
 data class CriticalForceResult(
     val criticalForceKg: Double,
@@ -101,6 +104,10 @@ data class CriticalForceResult(
     val cfToMvcPercent: Double?,
     val cfToBodyWeightPercent: Double?,
     val peakToBodyWeightPercent: Double?,
+    val id: UUID = UUID.randomUUID(),
+    val description: String = "",
+    val createdAtMs: Long = System.currentTimeMillis(),
+    val bodyWeightKg: Double? = null,
 ) {
     /**
      * Похоже ли на корректный all-out: усилие реально упало к плато (CF заметно ниже пика).
@@ -122,13 +129,12 @@ data class CriticalForceResult(
  *  1. Раунды нарезаются по метроному относительно `startTimestampMs`: раунд k (0-based) —
  *     окно тяги `[k·cycle, k·cycle + work]`. Предполагается, что прибор вёл спортсмена
  *     по ритму 7/3, а старт записи совпал со стартом первого раунда.
- *  2. Усилие раунда = свёртка отсчётов окна ([RoundAggregation.MEAN] по умолчанию).
+ *  2. Усилие раунда = свёртка отсчётов окна ([RoundAggregation.AVERAGE] по умолчанию).
  *  3. **CF** = среднее усилие последних [CriticalForceProtocol.plateauRounds] раундов с данными.
  *  4. **PF** = макс. мгновенная сила за весь тест.
  *  5. **W′** = импульс над CF = ∫ max(0, F − CF) dt (трапеции по соседним отсчётам).
  *  6. Нормировки CF/MVC, CF/вес, PF/вес — если переданы MVC и/или вес.
  *
- * Класс не хранит состояние между вызовами — один экземпляр можно переиспользовать.
  */
 class CriticalForceCalculator(
     private val protocol: CriticalForceProtocol = CriticalForceProtocol(),
@@ -148,7 +154,15 @@ class CriticalForceCalculator(
     ): CriticalForceResult {
         val sorted = samples.sortedBy { it.timestampMs }
 
-        val rounds = aggregateRounds(sorted, startTimestampMs)
+        val rounds = (0 until protocol.rounds).map { k ->
+            val forces = roundWindow(sorted, startTimestampMs, k).map { it.forceKg }
+            RoundForce(
+                index = k + 1,
+                forceKg = if (forces.isEmpty()) Double.NaN else aggregate(forces),
+                peakForceKg = forces.maxOrNull() ?: Double.NaN,
+                sampleCount = forces.size,
+            )
+        }
         val criticalForce = criticalForce(rounds)
         val peak = sorted.maxOfOrNull { it.forceKg } ?: 0.0
 
@@ -162,27 +176,20 @@ class CriticalForceCalculator(
             cfToMvcPercent = mvcKg?.takeIf { it > 0.0 }?.let { 100.0 * criticalForce / it },
             cfToBodyWeightPercent = bodyWeightKg?.takeIf { it > 0.0 }?.let { 100.0 * criticalForce / it },
             peakToBodyWeightPercent = bodyWeightKg?.takeIf { it > 0.0 }?.let { 100.0 * peak / it },
+            bodyWeightKg = bodyWeightKg?.takeIf { it > 0.0 },
         )
     }
 
-    /** Шаг 1–2: режем на раунды по метроному и сворачиваем каждое рабочее окно в одно усилие. */
-    private fun aggregateRounds(sorted: List<ForceSample>, startMs: Long): List<RoundForce> =
-        (0 until protocol.rounds).map { k ->
-            val fromMs = startMs + (k * protocol.cycleSeconds * 1000.0).toLong()
-            val toMs = startMs + ((k * protocol.cycleSeconds + protocol.workSeconds) * 1000.0).toLong()
-            val inWindow = sorted.asSequence()
-                .filter { it.timestampMs in fromMs..toMs && it.forceKg >= protocol.workForceThresholdKg }
-                .map { it.forceKg }
-                .toList()
-            RoundForce(
-                index = k + 1,
-                forceKg = if (inWindow.isEmpty()) Double.NaN else aggregate(inWindow),
-                sampleCount = inWindow.size,
-            )
+    private fun roundWindow(sorted: List<ForceSample>, startMs: Long, k: Int): List<ForceSample> {
+        val fromMs = startMs + (k * protocol.roundSeconds * 1000.0).toLong()
+        val toMs = startMs + ((k * protocol.roundSeconds + protocol.workSeconds) * 1000.0).toLong()
+        return sorted.filter {
+            it.timestampMs in fromMs..toMs && it.forceKg >= protocol.workForceThresholdKg
         }
+    }
 
     private fun aggregate(values: List<Double>): Double = when (protocol.aggregation) {
-        RoundAggregation.MEAN -> values.average()
+        RoundAggregation.AVERAGE -> values.average()
         RoundAggregation.MEDIAN -> median(values)
     }
 
@@ -192,20 +199,11 @@ class CriticalForceCalculator(
         return if (n % 2 == 1) s[n / 2] else (s[n / 2 - 1] + s[n / 2]) / 2.0
     }
 
-    /** Шаг 3: CF = среднее усилие последних [CriticalForceProtocol.plateauRounds] раундов с данными. */
     private fun criticalForce(rounds: List<RoundForce>): Double {
         val plateau = rounds.filter { it.hasData }.takeLast(protocol.plateauRounds)
         return if (plateau.isEmpty()) 0.0 else plateau.map { it.forceKg }.average()
     }
 
-    /**
-     * Шаг 5: импульс силы над уровнем [baseline] методом трапеций:
-     * `∫ max(0, F − baseline) dt`. При baseline = CF это W′, при baseline = 0 — полный импульс.
-     * Фазы отдыха (F ≈ 0 < CF) дают нулевой вклад, поэтому интегрируем по всей записи.
-     *
-     * Замечание: при пересечении линии baseline между двумя отсчётами трапеция по
-     * усечённым концам слегка завышает площадь — для частоты ≥ 10–20 Гц погрешность мала.
-     */
     private fun impulseAbove(sorted: List<ForceSample>, baseline: Double): Double {
         if (sorted.size < 2) return 0.0
         var impulse = 0.0

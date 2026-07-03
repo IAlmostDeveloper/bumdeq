@@ -6,6 +6,7 @@ import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -24,13 +25,18 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -38,6 +44,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import ru.ialmostdeveloper.bumdeq.criticalforce.CriticalForceResult
@@ -48,40 +55,55 @@ import kotlin.math.max
 
 /**
  * Страница замера Critical Force: метроном 24×(7 c тяга / 3 c отдых), сбор показаний датчика,
- * график и расчёт CF по завершении. Тест стартует при открытии страницы.
+ * график и расчёт CF по завершении. Перед стартом просит ввести описание замера; сам тест
+ * запускается по кнопке «Начать».
  *
  * @param measurement последнее показание датчика (источник отсчётов силы)
+ * @param onSaved     вызывается один раз по завершении теста — сохранить итог в историю
  * @param onBack      отмена замера / возврат в главное меню (нижняя навигация здесь скрыта)
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CriticalForceScreen(
     measurement: Measurement?,
+    onSaved: (CriticalForceResult) -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val state = remember { CriticalForceTestState() }
+    var started by rememberSaveable { mutableStateOf(false) }
+    var description by rememberSaveable { mutableStateOf("") }
+    var bodyWeight by rememberSaveable { mutableStateOf("") }
 
-    // Метроном теста; отменяется автоматически при уходе со страницы.
-    LaunchedEffect(Unit) { state.run() }
-
-    // На время замера блокируем поворот экрана (фиксируем текущую ориентацию), чтобы
-    // пересоздание Activity не сбрасывало тест. При выходе со страницы — восстанавливаем.
-    val context = LocalContext.current
-    DisposableEffect(Unit) {
-        val activity = context.findActivity()
-        val previous = activity?.requestedOrientation
-        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LOCKED
-        onDispose {
-            activity?.requestedOrientation = previous ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        }
+    // Сохраняем завершённый замер ровно один раз: эффект перезапускается при появлении result.id.
+    val finishedResult = state.result
+    LaunchedEffect(finishedResult?.id) {
+        finishedResult?.let(onSaved)
     }
 
-    // Запись каждого нового показания датчика в тест. Датчик шлёт ~раз в 200 мс (5 Гц),
-    // ключ — timestampMs, поэтому пишется ровно один отсчёт на каждое новое показание.
-    // Таймер ниже тикает чаще (≈30 Гц), так что обратный отсчёт остаётся плавным.
-    LaunchedEffect(measurement?.timestampMs) {
-        measurement?.numericValue?.let { state.onForce(it.toDouble()) }
+    // Метроном, блокировка поворота и запись отсчётов включаются только после старта теста.
+    if (started) {
+        // Метроном теста; отменяется автоматически при уходе со страницы.
+        LaunchedEffect(Unit) { state.run() }
+
+        // На время замера блокируем поворот экрана (фиксируем текущую ориентацию), чтобы
+        // пересоздание Activity не сбрасывало тест. При выходе со страницы — восстанавливаем.
+        val context = LocalContext.current
+        DisposableEffect(Unit) {
+            val activity = context.findActivity()
+            val previous = activity?.requestedOrientation
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LOCKED
+            onDispose {
+                activity?.requestedOrientation = previous ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            }
+        }
+
+        // Запись каждого нового показания датчика в тест. Датчик шлёт ~раз в 200 мс (5 Гц),
+        // ключ — timestampMs, поэтому пишется ровно один отсчёт на каждое новое показание.
+        // Таймер ниже тикает чаще (≈30 Гц), так что обратный отсчёт остаётся плавным.
+        LaunchedEffect(measurement?.timestampMs) {
+            measurement?.numericValue?.let { state.onForce(it.toDouble()) }
+        }
     }
 
     Scaffold(
@@ -105,12 +127,87 @@ fun CriticalForceScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             val result = state.result
-            if (state.isFinished && result != null) {
-                ResultContent(result = result, graph = state.graph, onBack = onBack)
-            } else {
-                RunningContent(state = state, onCancel = onBack)
+            when {
+                !started -> StartContent(
+                    description = description,
+                    onDescriptionChange = { description = it },
+                    bodyWeight = bodyWeight,
+                    onBodyWeightChange = { bodyWeight = it },
+                    onStart = {
+                        state.description = description.trim()
+                        state.bodyWeightKg = bodyWeight.trim().replace(',', '.').toDoubleOrNull()
+                            ?.takeIf { it > 0.0 }
+                        started = true
+                    },
+                )
+
+                state.isFinished && result != null ->
+                    ResultContent(result = result, graph = state.graph, onBack = onBack)
+
+                else -> RunningContent(state = state, onCancel = onBack)
             }
         }
+    }
+}
+
+/** Экран перед стартом: ввод описания замера, веса тела и кнопка запуска. */
+@Composable
+private fun ColumnScope.StartContent(
+    description: String,
+    onDescriptionChange: (String) -> Unit,
+    bodyWeight: String,
+    onBodyWeightChange: (String) -> Unit,
+    onStart: () -> Unit,
+) {
+    Spacer(Modifier.height(8.dp))
+    Text(
+        text = "Новый замер Critical Force",
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.Bold,
+    )
+    Text(
+        text = "24 раунда по 7 c тяги и 3 c отдыха. Тянуть каждый раунд максимально сильно.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        textAlign = TextAlign.Center,
+        modifier = Modifier.padding(top = 4.dp),
+    )
+
+    OutlinedTextField(
+        value = description,
+        onValueChange = onDescriptionChange,
+        label = { Text("Описание замера") },
+        placeholder = { Text("Например: правая рука, планка 20 мм") },
+        singleLine = false,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 24.dp),
+    )
+
+    val weightValid = bodyWeight.isBlank() ||
+        bodyWeight.trim().replace(',', '.').toDoubleOrNull()?.let { it > 0.0 } == true
+    OutlinedTextField(
+        value = bodyWeight,
+        onValueChange = onBodyWeightChange,
+        label = { Text("Вес тела, кг (необязательно)") },
+        placeholder = { Text("Например: 72.5") },
+        singleLine = true,
+        isError = !weightValid,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+        supportingText = { if (!weightValid) Text("Введите положительное число") },
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 12.dp),
+    )
+
+    Spacer(Modifier.weight(1f))
+
+    Button(
+        onClick = onStart,
+        enabled = weightValid,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text("Начать")
     }
 }
 
@@ -164,6 +261,21 @@ private fun ColumnScope.RunningContent(
         style = MaterialTheme.typography.titleMedium,
     )
 
+    // Пораундовая разбивка заполняется по ходу теста — показываем прогресс и пик закрытого раунда.
+    val lastRound = state.rounds.lastOrNull()
+    Text(
+        text = if (lastRound != null) {
+            val peak = if (lastRound.peakForceKg.isNaN()) 0.0 else lastRound.peakForceKg
+            "Раундов записано: ${state.rounds.size} / ${state.protocol.rounds} " +
+                "(пик раунда ${lastRound.index}: ${formatKg(peak)} кг)"
+        } else {
+            "Раундов записано: 0 / ${state.protocol.rounds}"
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 4.dp),
+    )
+
     ForceGraph(
         points = state.graph,
         lineColor = MaterialTheme.colorScheme.primary,
@@ -198,6 +310,16 @@ private fun ColumnScope.ResultContent(
     val context = LocalContext.current
     val settings = remember { AllOutSettings(context) }
 
+    if (result.description.isNotBlank()) {
+        Text(
+            text = result.description,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Medium,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(bottom = 4.dp),
+        )
+    }
+
     Text(
         text = "Critical Force",
         style = MaterialTheme.typography.titleMedium,
@@ -213,6 +335,8 @@ private fun ColumnScope.ResultContent(
     MetricRow("Пиковая сила (PF)", "${formatKg(result.peakForceKg)} кг")
     MetricRow("W′ (импульс над CF)", "${formatKg(result.wPrimeKgS)} кг·с")
     MetricRow("CF / PF", "${formatKg(result.cfToPeakPercent)} %")
+    result.bodyWeightKg?.let { MetricRow("Вес тела", "${formatKg(it)} кг") }
+    result.cfToBodyWeightPercent?.let { MetricRow("CF / вес", "${formatKg(it)} %") }
     Text(
         text = if (result.looksLikeValidAllOut(settings.maxCfToPeakPercent)) {
             "Похоже на корректный all-out"

@@ -28,10 +28,10 @@ class CriticalForceCalculatorTest {
         var tMs = 0L
         while (tMs <= endMs) {
             val tSec = tMs / 1000.0
-            val k = (tSec / protocol.cycleSeconds).toInt()
+            val k = (tSec / protocol.roundSeconds).toInt()
             val inWork = k < protocol.rounds &&
-                tSec >= k * protocol.cycleSeconds &&
-                tSec <= k * protocol.cycleSeconds + protocol.workSeconds
+                tSec >= k * protocol.roundSeconds &&
+                tSec <= k * protocol.roundSeconds + protocol.workSeconds
             samples.add(ForceSample(tMs, if (inWork) roundForce(k) else 0.0))
             tMs += dtMs
         }

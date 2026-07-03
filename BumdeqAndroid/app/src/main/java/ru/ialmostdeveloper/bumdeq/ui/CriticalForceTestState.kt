@@ -11,6 +11,8 @@ import ru.ialmostdeveloper.bumdeq.criticalforce.CriticalForceCalculator
 import ru.ialmostdeveloper.bumdeq.criticalforce.CriticalForceProtocol
 import ru.ialmostdeveloper.bumdeq.criticalforce.CriticalForceResult
 import ru.ialmostdeveloper.bumdeq.criticalforce.ForceSample
+import ru.ialmostdeveloper.bumdeq.criticalforce.RoundAggregation
+import ru.ialmostdeveloper.bumdeq.criticalforce.RoundForce
 import kotlinx.coroutines.delay
 import kotlin.math.ceil
 
@@ -30,9 +32,15 @@ enum class TestPhase { WORK, REST }
 class CriticalForceTestState(
     val protocol: CriticalForceProtocol = CriticalForceProtocol(),
 ) {
-    private val cycleMs = (protocol.cycleSeconds * 1000.0).toLong()
+    private val cycleMs = (protocol.roundSeconds * 1000.0).toLong()
     private val workMs = (protocol.workSeconds * 1000.0).toLong()
     private val totalMs = (protocol.totalSeconds * 1000.0).toLong()
+
+    /** Описание замера, введённое перед стартом; попадает в [result] по завершении. */
+    var description: String = ""
+
+    /** Вес тела, кг, введённый перед стартом; null — не задан. Идёт в расчёт CF/вес и в [result]. */
+    var bodyWeightKg: Double? = null
 
     var elapsedMs by mutableLongStateOf(0L)
         private set
@@ -45,9 +53,16 @@ class CriticalForceTestState(
     var currentForce by mutableDoubleStateOf(0.0)
         private set
 
-    /** Итог теста; не null после прохождения всех раундов. */
+    /** Итог теста (он же сохраняемая запись замера); не null после прохождения всех раундов. */
     var result by mutableStateOf<CriticalForceResult?>(null)
         private set
+
+    /**
+     * Пораундовая разбивка, заполняемая по ходу теста: раунд появляется сразу по завершении
+     * своего рабочего окна. В [finish] заменяется канонической разбивкой из калькулятора.
+     */
+    private val _rounds = mutableStateListOf<RoundForce>()
+    val rounds: List<RoundForce> get() = _rounds
 
     // Полные отсчёты для расчёта (метка = активный elapsedMs).
     private val samples = ArrayList<ForceSample>()
@@ -102,15 +117,59 @@ class CriticalForceTestState(
             // last обновляем всегда, чтобы после снятия паузы время не «прыгнуло» на её длину.
             if (!isPaused) {
                 elapsedMs = (elapsedMs + delta).coerceAtMost(totalMs)
+                fillCompletedRounds()
             }
         }
         finish()
     }
 
+    /** Достраивает [_rounds] раундами, чьё рабочее окно уже закончилось. */
+    private fun fillCompletedRounds() {
+        val completed =
+            if (elapsedMs < workMs) 0
+            else ((elapsedMs - workMs) / cycleMs + 1).toInt().coerceAtMost(protocol.rounds)
+        while (_rounds.size < completed) {
+            val k = _rounds.size // 0-based индекс закрываемого раунда
+            val forces = windowForces(k)
+            _rounds.add(
+                RoundForce(
+                    index = k + 1,
+                    forceKg = if (forces.isEmpty()) Double.NaN else aggregate(forces),
+                    peakForceKg = forces.maxOrNull() ?: Double.NaN,
+                    sampleCount = forces.size,
+                )
+            )
+        }
+    }
+
+    /** Отсчёты силы рабочего окна раунда [k] (0-based) по накопленным данным. */
+    private fun windowForces(k: Int): List<Double> {
+        val fromMs = k * cycleMs
+        val toMs = k * cycleMs + workMs
+        return samples.asSequence()
+            .filter { it.timestampMs in fromMs..toMs }
+            .map { it.forceKg }
+            .toList()
+    }
+
+    /** Свёртка отсчётов раунда — та же, что в калькуляторе (среднее/медиана по протоколу). */
+    private fun aggregate(values: List<Double>): Double = when (protocol.aggregation) {
+        RoundAggregation.AVERAGE -> values.average()
+        RoundAggregation.MEDIAN -> values.sorted().let { s ->
+            if (s.size % 2 == 1) s[s.size / 2] else (s[s.size / 2 - 1] + s[s.size / 2]) / 2.0
+        }
+    }
+
     private fun finish() {
         if (isFinished) return
         isFinished = true
-        result = CriticalForceCalculator(protocol).compute(samples, startTimestampMs = 0L)
+        fillCompletedRounds() // закрыть последний раунд (его окно завершается ровно в totalMs)
+        val computed = CriticalForceCalculator(protocol)
+            .compute(samples, startTimestampMs = 0L, bodyWeightKg = bodyWeightKg)
+        result = computed.copy(description = description)
+        // Заменяем «живые» раунды каноническими из калькулятора (с учётом фильтра порога).
+        _rounds.clear()
+        _rounds.addAll(computed.roundForces)
     }
 
     companion object {
