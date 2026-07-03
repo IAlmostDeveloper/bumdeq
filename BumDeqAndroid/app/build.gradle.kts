@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.Bumdeq"
+    namespace = "ru.ialmostdeveloper.bumdeq"
     compileSdk {
         version = release(36) {
             minorApiLevel = 1
@@ -12,7 +12,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.Bumdeq"
+        applicationId = "ru.ialmostdeveloper.bumdeq"
         minSdk = 31
         targetSdk = 36
         versionCode = 1
